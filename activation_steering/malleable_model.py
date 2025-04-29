@@ -465,7 +465,7 @@ class MalleableModel(torch.nn.Module):
 
 
     def respond_batch_sequential(self, prompts, settings=None, use_chat_template=True):
-        self.model.to(self.device)
+        #self.model.to(self.device)
         """
         Generate responses for multiple prompts sequentially.
 
