@@ -431,6 +431,8 @@ class MalleableModel(torch.nn.Module):
         """
         # Force model to CPU or GPU to ensure weights are in the correct device
         self.model.to(self.device)
+        # if not hasattr(self.model, 'is_offloaded') or not self.model.is_offloaded:
+        #     self.model.to(self.device)
         
         if use_chat_template:
             formatted_prompt = self.tokenizer.apply_chat_template(
