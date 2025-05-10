@@ -68,7 +68,7 @@ class SteeringVector:
         tokenizer.pad_token_id = 0
         batch_size = 32
         accumulate_last_x_tokens = "all"
-        suffixes = None
+        #suffixes = None
         method = "pca_center"
         n_layers = len(get_model_layer_list(model))
         # Normalize the layer indexes if they are negative
