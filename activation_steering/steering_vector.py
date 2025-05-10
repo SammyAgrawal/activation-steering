@@ -277,7 +277,8 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
     return directions, explained_variances
 
 
-def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
+def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, 
+                        suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
     """
     Retrieve the hidden states from the specified layers of the language model for the given input strings.
 
@@ -297,6 +298,8 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
     batched_inputs = [
         inputs[p : p + batch_size] for p in range(0, len(inputs), batch_size)
     ]
+    print(f"Running batched_get_hiddens for {len(batched_inputs)} batches; sample from batch: ")
+    print(f"batch[0][0]: {batched_inputs[0][0]}. batch[0][1]: {batched_inputs[0][1]}. batch[1][1]: {batched_inputs[1][1]}.")
     
     # Initialize an empty dictionary to store the hidden states for each specified layer
     hidden_states = {layer: [] for layer in hidden_layer_ids}
@@ -318,6 +321,8 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
                 
                 # Iterate over each batch of hidden states
                 for i, batch_hidden in enumerate(out.hidden_states[hidden_idx]):
+                    # batch hidden shape: (batch_size, sequence_length, hidden_size)
+                    print(f"batch_hidden {i}th batch shape: {batch_hidden.shape}")
                     if accumulate_last_x_tokens == "all":
                         accumulated_hidden_state = torch.mean(batch_hidden, dim=0)
                     elif accumulate_last_x_tokens == "suffix-only":
