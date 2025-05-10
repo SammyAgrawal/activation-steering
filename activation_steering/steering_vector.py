@@ -61,6 +61,32 @@ class SteeringVector:
                    directions=dirs, 
                    explained_variances=variances)
     
+    
+    def fit_sv_strength(self, model: MalleableModel, tokenizer: PreTrainedTokenizerBase, steering_dataset: SteeringDataset, hidden_layer_ids: list[int]=None):
+        if hidden_layer_ids is None:
+            hidden_layer_ids = range(model.config.num_hidden_layers)
+        tokenizer.pad_token_id = 0
+        batch_size = 32
+        accumulate_last_x_tokens = "all"
+        suffixes = None
+        method = "pca_center"
+        n_layers = len(get_model_layer_list(model))
+        # Normalize the layer indexes if they are negative
+        hidden_layer_ids = [i if i >= 0 else n_layers + i for i in hidden_layer_ids]
+        train_strs = [s for ex in steering_dataset.formatted_dataset for s in (ex.positive, ex.negative)]
+        layer_hiddens = batched_get_hiddens(
+            model, tokenizer, train_strs, hidden_layer_ids, batch_size, accumulate_last_x_tokens, suffixes
+        )
+        strengths = {}
+        for layer in custom_progress(hidden_layer_ids, description="Reading Hidden Representations ..."):
+            H = layer_hiddens[layer]
+            steer_vector_direction = self.directions[layer]
+            steer_vector_direction_strength = project_onto_direction(H, steer_vector_direction)
+            print(f"strength for layer {layer}: {steer_vector_direction_strength}")
+            strengths[layer] = steer_vector_direction_strength
+        return strengths, layer_hiddens
+
+    
     def save(self, file_path: str):
         """
         Save the SteeringVector to a file.
@@ -118,7 +144,11 @@ class SteeringVector:
                explained_variances=explained_variances)
 
 
-def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: PreTrainedTokenizerBase, inputs: list[ContrastivePair], hidden_layer_ids: typing.Iterable[int] | None = None, batch_size: int = 32, method: typing.Literal["pca_diff", "pca_center"] = "pca_center", save_analysis: bool = False, output_dir: str = "activation_steering_figures", accumulate_last_x_tokens: typing.Union[int, str] = 1, suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
+def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: PreTrainedTokenizerBase, inputs: list[ContrastivePair], 
+                         hidden_layer_ids: typing.Iterable[int] | None = None, batch_size: int = 32, 
+                         method: typing.Literal["pca_diff", "pca_center"] = "pca_center", save_analysis: bool = False, 
+                         output_dir: str = "activation_steering_figures", accumulate_last_x_tokens: typing.Union[int, str] = 1, 
+                         suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
     """
     Extract representations from the language model based on the contrast dataset.
 
@@ -247,7 +277,8 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
     return directions, explained_variances
 
 
-def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
+def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, 
+                        suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
     """
     Retrieve the hidden states from the specified layers of the language model for the given input strings.
 
@@ -267,6 +298,8 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
     batched_inputs = [
         inputs[p : p + batch_size] for p in range(0, len(inputs), batch_size)
     ]
+    print(f"Running batched_get_hiddens for {len(batched_inputs)} batches; sample from batch: ")
+    print(f"batch[0][0]: {batched_inputs[0][0]}. batch[0][1]: {batched_inputs[0][1]}. batch[1][1]: {batched_inputs[1][1]}.")
     
     # Initialize an empty dictionary to store the hidden states for each specified layer
     hidden_states = {layer: [] for layer in hidden_layer_ids}
@@ -288,6 +321,8 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
                 
                 # Iterate over each batch of hidden states
                 for i, batch_hidden in enumerate(out.hidden_states[hidden_idx]):
+                    # batch hidden shape: (batch_size, sequence_length, hidden_size)
+                    print(f"batch_hidden {i}th batch shape: {batch_hidden.shape}")
                     if accumulate_last_x_tokens == "all":
                         accumulated_hidden_state = torch.mean(batch_hidden, dim=0)
                     elif accumulate_last_x_tokens == "suffix-only":
