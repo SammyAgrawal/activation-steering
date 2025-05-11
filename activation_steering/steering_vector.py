@@ -62,29 +62,30 @@ class SteeringVector:
                    explained_variances=variances)
     
     
-    def fit_sv_strength(self, model: MalleableModel, tokenizer: PreTrainedTokenizerBase, steering_dataset: SteeringDataset, hidden_layer_ids: list[int]=None):
+    def fit_sv_strength(self, model: MalleableModel, tokenizer: PreTrainedTokenizerBase, steering_dataset: SteeringDataset, hidden_layer_ids: list[int]=None, norm_H=False):
         if hidden_layer_ids is None:
             hidden_layer_ids = range(model.config.num_hidden_layers)
         tokenizer.pad_token_id = 0
         batch_size = 32
-        accumulate_last_x_tokens = "all"
-        #suffixes = None
+        accumulate_last_x_tokens = "suffix-only"
+        suffixes = steering_dataset.suffixes
         method = "pca_center"
         n_layers = len(get_model_layer_list(model))
         # Normalize the layer indexes if they are negative
         hidden_layer_ids = [i if i >= 0 else n_layers + i for i in hidden_layer_ids]
         train_strs = [s for ex in steering_dataset.formatted_dataset for s in (ex.positive, ex.negative)]
-        layer_hiddens = batched_get_hiddens(
+        layer_hiddens = batched_get_hiddens( # (len(train_strs), hidden_dims) 
             model, tokenizer, train_strs, hidden_layer_ids, batch_size, accumulate_last_x_tokens, suffixes
         )
         strengths = {}
+        ratings = {}
+        norm_H = False
         for layer in custom_progress(hidden_layer_ids, description="Reading Hidden Representations ..."):
             H = layer_hiddens[layer]
             steer_vector_direction = self.directions[layer]
-            steer_vector_direction_strength = project_onto_direction(H, steer_vector_direction)
-            print(f"strength for layer {layer}: {steer_vector_direction_strength}")
-            strengths[layer] = steer_vector_direction_strength
-        return strengths, layer_hiddens
+            direction_strengths = project_onto_direction(H, steer_vector_direction, normalize_H=norm_H)
+            strengths[layer] = direction_strengths # get strength for each training str
+        return strengths, layer_hiddens, train_strs
 
     
     def save(self, file_path: str):
@@ -298,8 +299,7 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
     batched_inputs = [
         inputs[p : p + batch_size] for p in range(0, len(inputs), batch_size)
     ]
-    print(f"Running batched_get_hiddens for {len(batched_inputs)} batches; sample from batch: ")
-    print(f"batch[0][0]: {batched_inputs[0][0]}. batch[0][1]: {batched_inputs[0][1]}. batch[1][1]: {batched_inputs[1][1]}.")
+    # batch i is batched_inputs[i]; batch consists of positive and negative examples (batch[::2], etc) [+, -, +, -...]
     
     # Initialize an empty dictionary to store the hidden states for each specified layer
     hidden_states = {layer: [] for layer in hidden_layer_ids}
@@ -309,20 +309,27 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
         # Iterate over each batch of input strings
         for batch in custom_progress(batched_inputs, description="Collecting Hidden Representations ..."):
             # Pass the batch through the language model and retrieve the hidden states
+            # tokenizing gives [batch_size, sequence_length] matrix as input ids
             out = model(
                 **tokenizer(batch, padding=True, return_tensors="pt").to(model.device),
                 output_hidden_states=True,
             )
+
+            """
+            out has the following fields: loss, logits, past_key_values, hidden_states and is of type 'transformers.modeling_outputs.CausalLMOutputWithPast'
+            
+
+            """
             
             # Iterate over each specified layer ID
             for layer_id in hidden_layer_ids:
                 # Adjust the layer index if it is negative
-                hidden_idx = layer_id + 1 if layer_id >= 0 else layer_id
+                hidden_idx = layer_id + 1 if layer_id >= 0 else layer_id # the + 1 is because first entry is embedding output before any transformer blocks
                 
-                # Iterate over each batch of hidden states
+                # out.hidden_states is a num_layers + 1 tuple
                 for i, batch_hidden in enumerate(out.hidden_states[hidden_idx]):
-                    # batch hidden shape: (batch_size, sequence_length, hidden_size)
-                    print(f"batch_hidden {i}th batch shape: {batch_hidden.shape}")
+                    # batch_hidden shape: (batch_size, sequence_length, hidden_size)
+                    # accumulated_hidden_state is (sequence_length, hidden_size)
                     if accumulate_last_x_tokens == "all":
                         accumulated_hidden_state = torch.mean(batch_hidden, dim=0)
                     elif accumulate_last_x_tokens == "suffix-only":
@@ -349,7 +356,7 @@ def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: l
     return {k: np.vstack(v) for k, v in hidden_states.items()}
 
 
-def project_onto_direction(H, direction):
+def project_onto_direction(H, direction, normalize_H=False):
     """
     Project a matrix H onto a direction vector.
 
@@ -362,7 +369,11 @@ def project_onto_direction(H, direction):
     """
     # Calculate the magnitude (Euclidean norm) of the direction vector
     mag = np.linalg.norm(direction)
-    
+    if(normalize_H):
+        mag_H = np.linalg.norm(H.astype(np.float64))
+        print(f"mag {mag} was multiplied by {mag_H} to become {mag*mag_H}, unless inf")
+        if np.isfinite( mag_H ):
+            mag = mag * mag_H
     # Assert that the magnitude is not infinite to ensure validity
     assert not np.isinf(mag)
     
