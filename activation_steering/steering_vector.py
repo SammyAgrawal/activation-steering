@@ -15,8 +15,6 @@ from activation_steering.steering_dataset import SteeringDataset
 from activation_steering.config import log, GlobalConfig
 
 
-
-
 @dataclasses.dataclass
 class SteeringVector:
     """
@@ -278,8 +276,7 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
     return directions, explained_variances
 
 
-def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, 
-                        suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
+def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
     """
     Retrieve the hidden states from the specified layers of the language model for the given input strings.
 
@@ -382,7 +379,7 @@ def project_onto_direction(H, direction, normalize_H=False):
     return (H @ direction) / mag
 
 
-def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs):
+def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs, steering_vector=None):
     """
     Save PCA analysis figures for each hidden layer and create a macroscopic x-axis layer analysis plot.
 
@@ -392,6 +389,7 @@ def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs
         method: The method used for preparing training data.
         output_dir: The directory to save the figures to.
         inputs: The input data used for the analysis.
+        steering_vector : optional, project onto vector
     """
     # Create the output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -410,6 +408,9 @@ def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs
             train = h
             train[::2] -= center
             train[1::2] -= center
+        elif method == "pca_sv":
+            assert steering_vector is not None, "must pass in sv" 
+            
         else:
             raise ValueError("unknown method " + method)
 
