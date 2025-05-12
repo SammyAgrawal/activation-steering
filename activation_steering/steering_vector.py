@@ -27,7 +27,9 @@ class SteeringVector:
     """
     model_type: str
     directions: dict[int, np.ndarray]
-    explained_variances: dict
+    secondary_directions: dict[int, np.ndarray]
+    explained_variances: dict[int, float]
+    secondary_explained_variances: dict[int, float]
 
     @classmethod
     def train(cls, model: MalleableModel | PreTrainedModel, tokenizer: PreTrainedTokenizerBase, steering_dataset: SteeringDataset, **kwargs) -> "SteeringVector":
@@ -47,7 +49,7 @@ class SteeringVector:
         # Set the pad_token_id of the tokenizer to 0
         tokenizer.pad_token_id = 0
         
-        dirs, variances = read_representations(
+        dirs, variances, secondary_dirs, secondary_variances = read_representations(
             model,
             tokenizer,
             steering_dataset.formatted_dataset,
@@ -57,7 +59,9 @@ class SteeringVector:
         
         return cls(model_type=model.config.model_type, 
                    directions=dirs, 
-                   explained_variances=variances)
+                   secondary_directions=secondary_dirs,
+                   explained_variances=variances,
+                   secondary_explained_variances=secondary_variances)
     
     
     def fit_sv_strength(self, model: MalleableModel, tokenizer: PreTrainedTokenizerBase, steering_dataset: SteeringDataset, hidden_layer_ids: list[int]=None, norm_H=False):
@@ -107,7 +111,9 @@ class SteeringVector:
         data = {
             "model_type": self.model_type,
             "directions": {k: v.tolist() for k, v in self.directions.items()},
-            "explained_variances": self.explained_variances
+            "explained_variances": self.explained_variances,
+            "secondary_directions": {k: v.tolist() for k, v in self.secondary_directions.items()},
+            "secondary_explained_variances": self.secondary_explained_variances
         }
         with open(file_path, 'w') as f:
             json.dump(data, f)
@@ -134,19 +140,23 @@ class SteeringVector:
         
         directions = {int(k): np.array(v) for k, v in data["directions"].items()}
         explained_variances = {int(k): v for k, v in data["explained_variances"].items()}
+        secondary_directions = {int(k): np.array(v) for k, v in data["secondary_directions"].items()}
+        secondary_explained_variances = {int(k): v for k, v in data["secondary_explained_variances"].items()}
         
         log(f"Loaded directions for layers: {list(directions.keys())}", class_name="SteeringVector")
         log(f"Shape of first direction vector: {next(iter(directions.values())).shape}", class_name="SteeringVector")
         
         return cls(model_type=data["model_type"], 
                directions=directions, 
-               explained_variances=explained_variances)
+               secondary_directions=secondary_directions,
+               explained_variances=explained_variances,
+               secondary_explained_variances=secondary_explained_variances)
 
 
 def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: PreTrainedTokenizerBase, inputs: list[ContrastivePair], 
                          hidden_layer_ids: typing.Iterable[int] | None = None, batch_size: int = 32, 
                          method: typing.Literal["pca_diff", "pca_center"] = "pca_center", save_analysis: bool = False, 
-                         output_dir: str = "activation_steering_figures", accumulate_last_x_tokens: typing.Union[int, str] = 1, 
+                         output_dir: str = "/workspace/SteerKep/activation_steering_figures", accumulate_last_x_tokens: typing.Union[int, str] = 1, 
                          suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
     """
     Extract representations from the language model based on the contrast dataset.
@@ -207,7 +217,9 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
 
     # Initialize an empty dictionary to store the directions for each layer
     directions: dict[int, np.ndarray] = {}
+    secondary_directions: dict[int, np.ndarray] = {}
     explained_variances: dict[int, float] = {}
+    secondary_explained_variances: dict[int, float] = {}
     
     # Iterate over each specified layer
     for layer in custom_progress(hidden_layer_ids, description="Reading Hidden Representations ..."):
@@ -230,9 +242,11 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
             raise ValueError("unknown method " + method)
         
         # Perform PCA with 1 component on the training data to extract the direction vector
-        pca_model = PCA(n_components=1, whiten=False).fit(train)
-        directions[layer] = pca_model.components_.astype(np.float32).squeeze(axis=0)
+        pca_model = PCA(n_components=2, whiten=False).fit(train)
+        directions[layer] = pca_model.components_[0].astype(np.float32).squeeze(axis=0)
         explained_variances[layer] = pca_model.explained_variance_ratio_[0]
+        secondary_directions[layer] = pca_model.components_[1].astype(np.float32).squeeze(axis=0)
+        secondary_explained_variances[layer] = pca_model.explained_variance_ratio_[1]
         
         # Example:
         # Suppose the hidden states for the current layer are:
@@ -249,31 +263,27 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
         # will extract the direction vector that captures the most significant variation.
         # The resulting direction vector might be something like [0.57735027, 0.57735027, 0.57735027].
         
-        # Project the hidden states onto the direction vector
-        projected_hiddens = project_onto_direction(h, directions[layer])
+
+        for dir in [directions, secondary_directions]:
+            projected_hiddens = project_onto_direction(h, dir[layer])
+            # Calculate the mean of positive examples being smaller than negative examples
+            positive_smaller_mean = np.mean([
+                    projected_hiddens[i] < projected_hiddens[i + 1]
+                    for i in range(0, len(inputs) * 2, 2)
+                ])
         
-        # Calculate the mean of positive examples being smaller than negative examples
-        positive_smaller_mean = np.mean(
-            [
-                projected_hiddens[i] < projected_hiddens[i + 1]
-                for i in range(0, len(inputs) * 2, 2)
-            ]
-        )
+            # Calculate the mean of positive examples being larger than negative examples
+            positive_larger_mean = np.mean([
+                    projected_hiddens[i] > projected_hiddens[i + 1]
+                    for i in range(0, len(inputs) * 2, 2)
+                ])
         
-        # Calculate the mean of positive examples being larger than negative examples
-        positive_larger_mean = np.mean(
-            [
-                projected_hiddens[i] > projected_hiddens[i + 1]
-                for i in range(0, len(inputs) * 2, 2)
-            ]
-        )
-        
-        # If positive examples are smaller on average, flip the direction vector
-        if positive_smaller_mean > positive_larger_mean:
-            directions[layer] *= -1
+            # If positive examples are smaller on average, flip the direction vector
+            if positive_smaller_mean > positive_larger_mean:
+                dir[layer] *= -1
     
     # Return the dictionary mapping layer IDs to their corresponding direction vectors
-    return directions, explained_variances
+    return directions, explained_variances, secondary_directions, secondary_explained_variances
 
 
 def batched_get_hiddens(model, tokenizer, inputs: list[str], hidden_layer_ids: list[int],batch_size: int, accumulate_last_x_tokens: typing.Union[int, str] = 1, suffixes: typing.List[typing.Tuple[str, str]] = None) -> dict[int, np.ndarray]:
@@ -408,9 +418,6 @@ def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs
             train = h
             train[::2] -= center
             train[1::2] -= center
-        elif method == "pca_sv":
-            assert steering_vector is not None, "must pass in sv" 
-            
         else:
             raise ValueError("unknown method " + method)
 
@@ -455,3 +462,46 @@ def save_pca_figures(layer_hiddens, hidden_layer_ids, method, output_dir, inputs
     plt.savefig(os.path.join(output_dir, "macroscopic_analysis.png"))
     plt.close()
 
+
+def save_sv_strength_figures(layer_hiddens, hidden_layer_ids, output_dir, steering_vector):
+    os.makedirs(output_dir, exist_ok=True)
+    variances = []
+    layers = []
+    for layer in custom_progress(hidden_layer_ids, description="Saving SV Strength Figures"):
+        h = layer_hiddens[layer]
+        comp_1 = steering_vector.directions[layer]
+        comp_2 = steering_vector.secondary_directions[layer]
+        strengths = project_onto_direction(h, comp_1)
+        secondary_strengths = project_onto_direction(h, comp_2)
+        
+        pos_str = strengths[::2]
+        neg_str = strengths[1::2]
+        pos_sec_str = secondary_strengths[::2]
+        neg_sec_str = secondary_strengths[1::2]
+        
+        plt.figure(figsize=(8, 6))
+        plt.scatter(pos_str, pos_sec_str, alpha=0.7, label="Positive Examples")
+        plt.scatter(neg_str, neg_sec_str, alpha=0.7, label="Negative Examples")
+        plt.xlabel("PC1")
+        plt.ylabel("PC2")
+        plt.title(f"PCA Visualization - Layer {layer}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, f"sv_strength_layer_{layer}.png"))
+        plt.close()
+        
+        variances.append(steering_vector.explained_variances[layer])
+        layers.append(layer)    
+
+    plt.figure(figsize=(10, 6))
+    plt.plot(layers, variances, marker='o')
+    plt.xlabel("Layer ID")
+    plt.ylabel("Variance Explained by PC1")
+    plt.title("Macroscopic X-Axis Layer Analysis")
+    plt.grid(True)
+    plt.xticks(layers)
+    plt.tight_layout()
+
+    # Save the macroscopic analysis figure
+    plt.savefig(os.path.join(output_dir, "macroscopic_analysis.png"))
+    plt.close()
