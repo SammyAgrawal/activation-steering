@@ -243,9 +243,10 @@ def read_representations(model: MalleableModel | PreTrainedModel, tokenizer: Pre
         
         # Perform PCA with 1 component on the training data to extract the direction vector
         pca_model = PCA(n_components=2, whiten=False).fit(train)
-        directions[layer] = pca_model.components_[0].astype(np.float32).squeeze(axis=0)
+        print("Shape of learned components is: ", pca_model.components_.shape)
+        directions[layer] = pca_model.components_[0].astype(np.float32)
         explained_variances[layer] = pca_model.explained_variance_ratio_[0]
-        secondary_directions[layer] = pca_model.components_[1].astype(np.float32).squeeze(axis=0)
+        secondary_directions[layer] = pca_model.components_[1].astype(np.float32)
         secondary_explained_variances[layer] = pca_model.explained_variance_ratio_[1]
         
         # Example:

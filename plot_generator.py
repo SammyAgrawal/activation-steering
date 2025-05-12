@@ -15,11 +15,14 @@ from arguments import get_config
 from steered_model import *
 steer_cfg = get_config(config_path='/workspace/SteerKep/steer-data/steerconfig.yaml')
 
+print("Finished imports and got steer config")
 
-model = AutoModelForCausalLM.from_pretrained(cfg.model_name, cache_dir=cfg.cache_dir, device_map='auto', torch_dtype=torch.float16)
-tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.cache_dir)
+model = AutoModelForCausalLM.from_pretrained(steer_cfg.model_name, cache_dir=steer_cfg.cache_dir, device_map='auto', torch_dtype=torch.float16)
+tokenizer = AutoTokenizer.from_pretrained(steer_cfg.model_name, cache_dir=steer_cfg.cache_dir)
 
 ## Load original 
+
+print("Loaded model and tok")
 
 def load_dataset(ds_name, tokenizer, chat_temp=False):
     with open(os.path.join(steer_cfg.steering_datasets_dir, ds_name), 'r') as f:
@@ -37,7 +40,9 @@ def load_sv(sv_name):
     return SteeringVector.load(svpath)
 
 sv_ds_name = "junk-healthy.json"
-sv_dataset = load_sv(sv_ds_name)
+sv_dataset = load_dataset(sv_ds_name, tokenizer)
+
+print("Loaded steering dataset ", sv_dataset, "\n")
 
 steer_vector = SteeringVector.train(
     model=model,
@@ -51,6 +56,8 @@ steer_vector = SteeringVector.train(
 
 steer_vector.save(os.path.join(steer_cfg.steering_vector_dir, "junk-healthy2.svec"))
 
+print(f"Trained and saved steering vector to {os.path.join(steer_cfg.steering_vector_dir, 'junk-healthy2.svec')}")
+
 with open("/workspace/SteerKep/saved_results.json", "r") as file:
     saved_results = json.load(file)
 sammy_hidden = saved_results["sammy"]["hidden"]
@@ -62,6 +69,9 @@ dan_hidden = {int(k): np.array(v) for k, v in dan_hidden.items()}
 aakash_hidden = {int(k): np.array(v) for k, v in aakash_hidden.items()}
 
 hidden_layer_ids=[29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+
+
+print("opened and saved hidden states from interactions. Now creating strength plots")
 
 save_sv_strength_figures(sammy_hidden, hidden_layer_ids, "/workspace/SteerKep/activation_steering_figures/sammy_proj/", steer_vector)
 
